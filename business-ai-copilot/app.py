@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from ai.sql_agent import answer_from_sql
-from db.database import run_query
+from db.database import run_query, get_schema_summary
 
 st.set_page_config(page_title="Business SQL Insights Copilot", layout="wide")
 
@@ -154,7 +154,125 @@ def get_overview_data():
     }
 
 
+def render_schema_view():
+    """
+    Render a simple, human-friendly view of the main tables and relationships
+    so users can understand the data model before asking questions.
+    """
+    st.subheader("📚 Schema & table relationships")
+
+    st.markdown(
+        """
+        The WideWorldImporters database is organised into a few key schemas:
+
+        - **Sales** – customers, orders, invoices and line items (transactional data)
+        - **Warehouse** – stock items, stock groups and product metadata
+        - **Application** – cities, people and reference data
+        """
+    )
+
+    st.markdown("#### Sales schema (transactions)")
+    st.markdown(
+        """
+        - **Sales.Customers** – one row per customer (CustomerID, CustomerName, BillToCustomerID, etc.)
+        - **Sales.Orders** – one row per order (OrderID, CustomerID, OrderDate, etc.)
+        - **Sales.OrderLines** – line items for each order (OrderLineID, OrderID, StockItemID, Quantity, UnitPrice)
+        - **Sales.Invoices** – one row per invoice (InvoiceID, CustomerID, InvoiceDate, etc.)
+        - **Sales.InvoiceLines** – line items for each invoice (InvoiceLineID, InvoiceID, StockItemID, Quantity, UnitPrice)
+        """
+    )
+
+    st.markdown("#### Warehouse schema (products)")
+    st.markdown(
+        """
+        - **Warehouse.StockItems** – one row per product/stock item (StockItemID, StockItemName, UnitPrice, etc.)
+        - **Warehouse.StockGroups** – high-level product groups/categories (StockGroupID, StockGroupName)
+        - **Warehouse.StockItemStockGroups** – link table mapping stock items to stock groups (StockItemID, StockGroupID)
+        """
+    )
+
+    st.markdown("#### Application schema (locations & reference)")
+    st.markdown(
+        """
+        - **Application.Cities**, **Application.StateProvinces**, **Application.Countries**
+          – location metadata that can be joined to customers, suppliers, etc.
+        """
+    )
+
+    st.markdown("#### Key relationships (box diagram style)")
+    st.code(
+        """
+[Sales.Customers] 1 ──< [Sales.Orders] 1 ──< [Sales.OrderLines]
+       │
+       └──< [Sales.Invoices] 1 ──< [Sales.InvoiceLines]
+
+[Warehouse.StockItems] 1 ──< [Sales.OrderLines / Sales.InvoiceLines]
+
+[Warehouse.StockItems] 1 ──< [Warehouse.StockItemStockGroups] >── 1 [Warehouse.StockGroups]
+        """.strip()
+    )
+
+    st.markdown("#### Visual schema diagram")
+
+    dot = r"""
+digraph G {
+    rankdir=LR;
+    node [shape=box, style=filled, fillcolor="#f5f5f5", color="#888888", fontname="Helvetica"];
+
+    Sales_Customers         [label="Sales.Customers"];
+    Sales_Orders            [label="Sales.Orders"];
+    Sales_OrderLines        [label="Sales.OrderLines"];
+    Sales_Invoices          [label="Sales.Invoices"];
+    Sales_InvoiceLines      [label="Sales.InvoiceLines"];
+
+    Warehouse_StockItems           [label="Warehouse.StockItems"];
+    Warehouse_StockItemStockGroups [label="Warehouse.StockItemStockGroups"];
+    Warehouse_StockGroups          [label="Warehouse.StockGroups"];
+
+    // Sales relationships
+    Sales_Customers -> Sales_Orders       [label="CustomerID"];
+    Sales_Orders    -> Sales_OrderLines   [label="OrderID"];
+    Sales_Customers -> Sales_Invoices     [label="CustomerID"];
+    Sales_Invoices  -> Sales_InvoiceLines [label="InvoiceID"];
+
+    // Product relationships
+    Warehouse_StockItems -> Sales_OrderLines   [label="StockItemID"];
+    Warehouse_StockItems -> Sales_InvoiceLines [label="StockItemID"];
+
+    // Stock group relationships
+    Warehouse_StockItems           -> Warehouse_StockItemStockGroups [label="StockItemID"];
+    Warehouse_StockItemStockGroups -> Warehouse_StockGroups          [label="StockGroupID"];
+}
+    """
+
+    st.graphviz_chart(dot)
+
+    st.markdown(
+        """
+        You can use these relationships to phrase better questions, for example:
+
+        - *"Show total revenue per stock group using invoice lines and stock item stock groups."*
+        - *"For each customer, show total orders and total invoice revenue per year."*
+        """
+    )
+
+    # Optionally show a trimmed version of the raw schema summary for power users
+    try:
+        schema_text = get_schema_summary()
+        with st.expander("Full raw schema summary (truncated)"):
+            st.text(schema_text[:4000])
+    except Exception:
+        pass
+
+
 st.title("PEPSCO Business SQL Insights Copilot")
+
+# Simple left-hand navigation
+view = st.sidebar.radio(
+    "Navigation",
+    ("Overview & Copilot", "Schema & Tables"),
+    index=0,
+)
 
 st.markdown(
     """
@@ -163,121 +281,128 @@ st.markdown(
     """
 )
 
-# ---------- Overview dashboard (landing screen) ----------
-overview = get_overview_data()
-metrics = overview["metrics"]
+if view == "Schema & Tables":
+    render_schema_view()
+else:
+    # ---------- Overview dashboard (landing screen) ----------
+    overview = get_overview_data()
+    metrics = overview["metrics"]
 
-st.subheader("Business overview")
+    st.subheader("Business overview")
 
-col1, col2, col3 = st.columns(3)
-with col1:
-    st.metric(
-        "Total customers",
-        f"{metrics['total_customers']:,}" if metrics["total_customers"] is not None else "—",
-    )
-    st.metric(
-        "Total orders",
-        f"{metrics['total_orders']:,}" if metrics["total_orders"] is not None else "—",
-    )
-with col2:
-    st.metric(
-        "Total invoices",
-        f"{metrics['total_invoices']:,}" if metrics["total_invoices"] is not None else "—",
-    )
-    st.metric(
-        "Total revenue (all time)",
-        f"{metrics['total_revenue']:.0f}" if metrics["total_revenue"] is not None else "—",
-    )
-with col3:
-    st.metric(
-        "Revenue (last 12 months)",
-        f"{metrics['revenue_last_12m']:.0f}"
-        if metrics["revenue_last_12m"] is not None
-        else "—",
-    )
-    if metrics["top_stock_group"]:
+    col1, col2, col3 = st.columns(3)
+    with col1:
         st.metric(
-            "Top stock group by revenue (all time)",
-            metrics["top_stock_group"],
-            f"{metrics['top_stock_group_revenue']:.0f}"
-            if metrics["top_stock_group_revenue"] is not None
-            else None,
+            "Total customers",
+            f"{metrics['total_customers']:,}"
+            if metrics["total_customers"] is not None
+            else "—",
         )
-    else:
-        st.metric("Top stock group by revenue (all time)", "—")
-
-# Mini charts row
-chart_col1, chart_col2 = st.columns(2)
-
-with chart_col1:
-    if overview["monthly_revenue"] is not None:
-        st.markdown("#### 📈 Monthly revenue (last 12 months)")
-        st.line_chart(
-            overview["monthly_revenue"].set_index("Month")["Revenue"]
+        st.metric(
+            "Total orders",
+            f"{metrics['total_orders']:,}"
+            if metrics["total_orders"] is not None
+            else "—",
         )
-
-with chart_col2:
-    if overview["monthly_orders"] is not None:
-        st.markdown("#### 📦 Orders per month (last 12 months)")
-        st.line_chart(
-            overview["monthly_orders"].set_index("Month")["Orders"]
+    with col2:
+        st.metric(
+            "Total invoices",
+            f"{metrics['total_invoices']:,}"
+            if metrics["total_invoices"] is not None
+            else "—",
         )
+        st.metric(
+            "Total revenue (all time)",
+            f"{metrics['total_revenue']:.0f}"
+            if metrics["total_revenue"] is not None
+            else "—",
+        )
+    with col3:
+        st.metric(
+            "Revenue (last 12 months)",
+            f"{metrics['revenue_last_12m']:.0f}"
+            if metrics["revenue_last_12m"] is not None
+            else "—",
+        )
+        if metrics["top_stock_group"]:
+            st.metric(
+                "Top stock group by revenue (all time)",
+                metrics["top_stock_group"],
+                f"{metrics['top_stock_group_revenue']:.0f}"
+                if metrics["top_stock_group_revenue"] is not None
+                else None,
+            )
+        else:
+            st.metric("Top stock group by revenue (all time)", "—")
 
-st.markdown("---")
+    # Mini charts row
+    chart_col1, chart_col2 = st.columns(2)
 
-# ---------- Natural language SQL copilot ----------
-st.markdown(
-    """
-    ### Ask questions in natural language
+    with chart_col1:
+        if overview["monthly_revenue"] is not None:
+            st.markdown("#### 📈 Monthly revenue (last 12 months)")
+            st.line_chart(overview["monthly_revenue"].set_index("Month")["Revenue"])
 
-    Examples:
-    - "Which customers placed the most orders?"
-    - "Show total sales by month for the year 2016."
-    - "Which product categories contribute most to revenue?"
-    """
-)
+    with chart_col2:
+        if overview["monthly_orders"] is not None:
+            st.markdown("#### 📦 Orders per month (last 12 months)")
+            st.line_chart(overview["monthly_orders"].set_index("Month")["Orders"])
 
-if "history" not in st.session_state:
-    st.session_state.history = []
-if "last_sql_result" not in st.session_state:
-    st.session_state.last_sql_result = None
+    st.markdown("---")
 
-user_q = st.chat_input("Ask your question about the business data...")
+    # ---------- Natural language SQL copilot ----------
+    st.markdown(
+        """
+        ### Ask questions in natural language
 
-if user_q:
-    st.session_state.history.append(("user", user_q))
+        Examples:
+        - "Which customers placed the most orders?"
+        - "Show total sales by month for the year 2016."
+        - "Which product categories contribute most to revenue?"
+        """
+    )
 
-    with st.spinner("Querying the database and analysing results..."):
-        sql_result = answer_from_sql(user_q)
-        ans_text = sql_result["answer"]
+    if "history" not in st.session_state:
+        st.session_state.history = []
+    if "last_sql_result" not in st.session_state:
+        st.session_state.last_sql_result = None
 
-    st.session_state.history.append(("assistant", ans_text))
-    st.session_state.last_sql_result = sql_result
+    user_q = st.chat_input("Ask your question about the business data...")
 
-# Chat history display
-for role, msg in st.session_state.history:
-    with st.chat_message(role):
-        st.markdown(msg)
+    if user_q:
+        st.session_state.history.append(("user", user_q))
 
-# If we have SQL rows from the last query, show them with simple visuals
-sql_res = st.session_state.last_sql_result
-if sql_res is not None:
-    rows = sql_res.get("rows", [])
-    sql = sql_res.get("sql", "")
+        with st.spinner("Querying the database and analysing results..."):
+            sql_result = answer_from_sql(user_q)
+            ans_text = sql_result["answer"]
 
-    if rows:
-        st.markdown("### 📊 Data behind the insight")
-        if sql:
-            st.code(sql, language="sql")
+        st.session_state.history.append(("assistant", ans_text))
+        st.session_state.last_sql_result = sql_result
 
-        df = pd.DataFrame(rows)
-        st.dataframe(df, use_container_width=True)
+    # Chat history display
+    for role, msg in st.session_state.history:
+        with st.chat_message(role):
+            st.markdown(msg)
 
-        # Try a simple chart if there's at least one numeric column with a valid name
-        numeric_cols = df.select_dtypes(include=["number"]).columns.tolist()
-        # Filter out empty or whitespace-only column names that can break Altair/Streamlit
-        numeric_cols = [c for c in numeric_cols if c and str(c).strip()]
+    # If we have SQL rows from the last query, show them with simple visuals
+    sql_res = st.session_state.last_sql_result
+    if sql_res is not None:
+        rows = sql_res.get("rows", [])
+        sql = sql_res.get("sql", "")
 
-        if numeric_cols:
-            st.markdown("#### Quick visual (first numeric column)")
-            st.line_chart(df[numeric_cols[0]])
+        if rows:
+            st.markdown("### 📊 Data behind the insight")
+            if sql:
+                st.code(sql, language="sql")
+
+            df = pd.DataFrame(rows)
+            st.dataframe(df, use_container_width=True)
+
+            # Try a simple chart if there's at least one numeric column with a valid name
+            numeric_cols = df.select_dtypes(include=["number"]).columns.tolist()
+            # Filter out empty or whitespace-only column names that can break Altair/Streamlit
+            numeric_cols = [c for c in numeric_cols if c and str(c).strip()]
+
+            if numeric_cols:
+                st.markdown("#### Quick visual (first numeric column)")
+                st.line_chart(df[numeric_cols[0]])
