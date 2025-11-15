@@ -265,7 +265,7 @@ digraph G {
         pass
 
 
-st.title("PEPSCO Business SQL Insights Copilot")
+st.title("PEPSACO DB Insights Copilot")
 
 # Simple left-hand navigation
 view = st.sidebar.radio(
