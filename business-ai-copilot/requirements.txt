@@ -1,0 +1,7 @@
+streamlit
+sqlalchemy
+pymssql
+python-dotenv
+pypdf
+pandas
+google-generativeai
