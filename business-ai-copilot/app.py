@@ -1,16 +1,237 @@
 import streamlit as st
 import pandas as pd
 from ai.sql_agent import answer_from_sql
+from db.database import run_query
 
 st.set_page_config(page_title="Business SQL Insights Copilot", layout="wide")
-st.title("🧠 Business SQL Insights Copilot")
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_overview_data():
+    """
+    Pre-compute high-level business metrics and simple time-series
+    directly from the SQL Server database.
+    """
+    metrics = {
+        "total_customers": None,
+        "total_orders": None,
+        "total_invoices": None,
+        "total_revenue": None,
+        "revenue_last_12m": None,
+        "top_stock_group": None,
+        "top_stock_group_revenue": None,
+    }
+    monthly_revenue_df = None
+    monthly_orders_df = None
+
+    # Total customers
+    try:
+        rows = run_query("SELECT COUNT(*) AS TotalCustomers FROM Sales.Customers;")
+        metrics["total_customers"] = rows[0]["TotalCustomers"]
+    except Exception:
+        pass
+
+    # Total orders
+    try:
+        rows = run_query("SELECT COUNT(*) AS TotalOrders FROM Sales.Orders;")
+        metrics["total_orders"] = rows[0]["TotalOrders"]
+    except Exception:
+        pass
+
+    # Total invoices and total revenue (all time)
+    try:
+        rows = run_query("SELECT COUNT(*) AS TotalInvoices FROM Sales.Invoices;")
+        metrics["total_invoices"] = rows[0]["TotalInvoices"]
+    except Exception:
+        pass
+
+    try:
+        rows = run_query(
+            """
+            SELECT SUM(Quantity * UnitPrice) AS TotalRevenue
+            FROM Sales.InvoiceLines;
+            """
+        )
+        metrics["total_revenue"] = rows[0]["TotalRevenue"]
+    except Exception:
+        pass
+
+    # Revenue in last 12 months (relative to latest invoice date in the dataset)
+    try:
+        rows = run_query(
+            """
+            WITH Latest AS (
+                SELECT MAX(InvoiceDate) AS MaxDate
+                FROM Sales.Invoices
+            )
+            SELECT
+                SUM(il.Quantity * il.UnitPrice) AS RevenueLast12M
+            FROM Sales.InvoiceLines AS il
+            JOIN Sales.Invoices AS i
+                ON il.InvoiceID = i.InvoiceID
+            CROSS JOIN Latest
+            WHERE i.InvoiceDate >= DATEADD(month, -12, Latest.MaxDate);
+            """
+        )
+        metrics["revenue_last_12m"] = rows[0]["RevenueLast12M"]
+    except Exception:
+        pass
+
+    # Top stock group by revenue
+    try:
+        rows = run_query(
+            """
+            SELECT TOP 1
+                sg.StockGroupName,
+                SUM(il.Quantity * il.UnitPrice) AS TotalRevenue
+            FROM Sales.InvoiceLines AS il
+            JOIN Warehouse.StockItemStockGroups AS sisg
+                ON il.StockItemID = sisg.StockItemID
+            JOIN Warehouse.StockGroups AS sg
+                ON sisg.StockGroupID = sg.StockGroupID
+            GROUP BY sg.StockGroupName
+            ORDER BY TotalRevenue DESC;
+            """
+        )
+        if rows:
+            metrics["top_stock_group"] = rows[0]["StockGroupName"]
+            metrics["top_stock_group_revenue"] = rows[0]["TotalRevenue"]
+    except Exception:
+        pass
+
+    # Monthly revenue for last 12 months (relative to latest invoice date)
+    try:
+        rows = run_query(
+            """
+            WITH Latest AS (
+                SELECT MAX(InvoiceDate) AS MaxDate
+                FROM Sales.Invoices
+            )
+            SELECT
+                FORMAT(i.InvoiceDate, 'yyyy-MM') AS Month,
+                SUM(il.Quantity * il.UnitPrice) AS Revenue
+            FROM Sales.InvoiceLines AS il
+            JOIN Sales.Invoices AS i
+                ON il.InvoiceID = i.InvoiceID
+            CROSS JOIN Latest
+            WHERE i.InvoiceDate >= DATEADD(month, -12, Latest.MaxDate)
+            GROUP BY FORMAT(i.InvoiceDate, 'yyyy-MM')
+            ORDER BY Month;
+            """
+        )
+        if rows:
+            monthly_revenue_df = pd.DataFrame(rows)
+    except Exception:
+        pass
+
+    # Orders per month for last 12 months (relative to latest order date)
+    try:
+        rows = run_query(
+            """
+            WITH Latest AS (
+                SELECT MAX(OrderDate) AS MaxDate
+                FROM Sales.Orders
+            )
+            SELECT
+                FORMAT(o.OrderDate, 'yyyy-MM') AS Month,
+                COUNT(*) AS Orders
+            FROM Sales.Orders AS o
+            CROSS JOIN Latest
+            WHERE o.OrderDate >= DATEADD(month, -12, Latest.MaxDate)
+            GROUP BY FORMAT(o.OrderDate, 'yyyy-MM')
+            ORDER BY Month;
+            """
+        )
+        if rows:
+            monthly_orders_df = pd.DataFrame(rows)
+    except Exception:
+        pass
+
+    return {
+        "metrics": metrics,
+        "monthly_revenue": monthly_revenue_df,
+        "monthly_orders": monthly_orders_df,
+    }
+
+
+st.title("Business SQL Insights Copilot")
 
 st.markdown(
     """
-    Ask natural language questions about the **SQL Server database**.
+    This is your **Business Overview** and **AI-powered SQL copilot** over the
+    WideWorldImporters SQL Server database.
+    """
+)
+
+# ---------- Overview dashboard (landing screen) ----------
+overview = get_overview_data()
+metrics = overview["metrics"]
+
+st.subheader("Business overview")
+
+col1, col2, col3 = st.columns(3)
+with col1:
+    st.metric(
+        "Total customers",
+        f"{metrics['total_customers']:,}" if metrics["total_customers"] is not None else "—",
+    )
+    st.metric(
+        "Total orders",
+        f"{metrics['total_orders']:,}" if metrics["total_orders"] is not None else "—",
+    )
+with col2:
+    st.metric(
+        "Total invoices",
+        f"{metrics['total_invoices']:,}" if metrics["total_invoices"] is not None else "—",
+    )
+    st.metric(
+        "Total revenue (all time)",
+        f"{metrics['total_revenue']:.0f}" if metrics["total_revenue"] is not None else "—",
+    )
+with col3:
+    st.metric(
+        "Revenue (last 12 months)",
+        f"{metrics['revenue_last_12m']:.0f}"
+        if metrics["revenue_last_12m"] is not None
+        else "—",
+    )
+    if metrics["top_stock_group"]:
+        st.metric(
+            "Top stock group by revenue (all time)",
+            metrics["top_stock_group"],
+            f"{metrics['top_stock_group_revenue']:.0f}"
+            if metrics["top_stock_group_revenue"] is not None
+            else None,
+        )
+    else:
+        st.metric("Top stock group by revenue (all time)", "—")
+
+# Mini charts row
+chart_col1, chart_col2 = st.columns(2)
+
+with chart_col1:
+    if overview["monthly_revenue"] is not None:
+        st.markdown("#### 📈 Monthly revenue (last 12 months)")
+        st.line_chart(
+            overview["monthly_revenue"].set_index("Month")["Revenue"]
+        )
+
+with chart_col2:
+    if overview["monthly_orders"] is not None:
+        st.markdown("#### 📦 Orders per month (last 12 months)")
+        st.line_chart(
+            overview["monthly_orders"].set_index("Month")["Orders"]
+        )
+
+st.markdown("---")
+
+# ---------- Natural language SQL copilot ----------
+st.markdown(
+    """
+    ### Ask questions in natural language
 
     Examples:
-    - "Which customers have the highest total order value in the last 6 months?"
+    - "Which customers placed the most orders?"
     - "Show total sales by month for the last 2 years."
     - "Which product categories contribute most to revenue?"
     """
