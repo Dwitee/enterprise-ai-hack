@@ -5,3 +5,4 @@ python-dotenv
 pypdf
 pandas
 google-generativeai
+watchdog
