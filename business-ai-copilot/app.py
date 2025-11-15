@@ -154,7 +154,7 @@ def get_overview_data():
     }
 
 
-st.title("Business SQL Insights Copilot")
+st.title("PEPSCO Business SQL Insights Copilot")
 
 st.markdown(
     """
@@ -232,7 +232,7 @@ st.markdown(
 
     Examples:
     - "Which customers placed the most orders?"
-    - "Show total sales by month for the last 2 years."
+    - "Show total sales by month for the year 2016."
     - "Which product categories contribute most to revenue?"
     """
 )
